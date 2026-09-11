@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# 数据集 (CIFAR-10 自动下载到 data/)
+data/
+
+# 训练产物
+checkpoints/
+runs/
+logs/
+samples/
+*.pt
+*.pth
+*.ckpt
+*.onnx
+
+# IDE / 编辑器
+.idea/
+.vscode/
+
+# 系统文件
+.DS_Store
+Thumbs.db
