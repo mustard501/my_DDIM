@@ -61,8 +61,8 @@ class GaussianDiffusion:
 
     @torch.no_grad()
     def p_sample(self, model, x, t):
-        tv = torch.full((x.shape[0],), t, device=xt.device, dtype=torch.long)
-        eps = model(xt, tv)
+        tv = torch.full((x.shape[0],), t, device=x.device, dtype=torch.long)
+        eps = model(x, tv)
         coef = extract(self.betas, tv, x.shape) / extract(self.sqrt_1m_acp, tv, x.shape)
         mean = (x - coef * eps) / extract(self.sqrt_alphas, tv, x.shape)
         if t == 0:
