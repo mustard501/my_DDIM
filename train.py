@@ -279,15 +279,46 @@ def generate_fid_samples(model, diffusion, device, out_dir, n, batch_size):
     pbar.close()
 
 
+def _frechet_distance(mu1, sigma1, mu2, sigma2, eps=1e-6):
+    """Fréchet distance between two Gaussians (scipy>=1.14 compatible)."""
+    import numpy as np
+    from scipy import linalg
+
+    mu1 = np.atleast_1d(mu1)
+    mu2 = np.atleast_1d(mu2)
+    sigma1 = np.atleast_2d(sigma1)
+    sigma2 = np.atleast_2d(sigma2)
+    diff = mu1 - mu2
+
+    covmean = linalg.sqrtm(sigma1 @ sigma2)
+    if not np.isfinite(covmean).all():
+        print(f"FID: singular product; adding {eps} to diagonal of cov estimates")
+        eye = np.eye(sigma1.shape[0]) * eps
+        covmean = linalg.sqrtm((sigma1 + eye) @ (sigma2 + eye))
+
+    if np.iscomplexobj(covmean):
+        if not np.allclose(np.diagonal(covmean).imag, 0, atol=1e-3):
+            raise ValueError(f"Imaginary component {np.max(np.abs(covmean.imag))}")
+        covmean = covmean.real
+
+    return float(diff @ diff + np.trace(sigma1) + np.trace(sigma2) - 2 * np.trace(covmean))
+
+
 def compute_fid(fake_dir, ref_dir, device, batch_size=50):
+    """Extract Inception features with pytorch-fid, Fréchet dist with our helper."""
     from pytorch_fid import fid_score
-    return fid_score.calculate_fid_given_paths(
-        [fake_dir, ref_dir],
-        batch_size=batch_size,
-        device=device,
-        dims=2048,
-        num_workers=0,
-    )
+    from pytorch_fid.inception import InceptionV3
+
+    dims = 2048
+    block = max(1, min(batch_size, 256))
+    model = InceptionV3([InceptionV3.BLOCK_INDEX_BY_DIM[dims]]).to(device)
+    model.eval()
+
+    mu_g, sigma_g = fid_score.calculate_activation_statistics(
+        fake_dir, model, block, dims, device, num_workers=0)
+    mu_r, sigma_r = fid_score.calculate_activation_statistics(
+        ref_dir, model, block, dims, device, num_workers=0)
+    return _frechet_distance(mu_g, sigma_g, mu_r, sigma_r)
 
 
 def run_fid_eval(model, ema_shadow, diffusion, device, args, step=None, writer=None):
