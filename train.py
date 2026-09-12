@@ -8,9 +8,11 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
+from torch.utils.tensorboard import SummaryWriter
 import torchvision
 import torchvision.transforms as TF
 from torchvision.utils import save_image
+from tqdm import tqdm
 
 #======= diffusion =========
 
@@ -232,6 +234,77 @@ def extract(a, t, x_shape):
     """Gather from precomputed tensor a[T] at timesteps t[B], reshape for broadcasting."""
     return a.gather(0, t).view(-1, *([1] * (len(x_shape) - 1)))
 
+
+def make_ema_model(model, ema_shadow):
+    ema_model = copy.deepcopy(model)
+    ema_model.load_state_dict(ema_shadow)
+    ema_model.eval()
+    return ema_model
+
+
+def ensure_cifar10_ref(data_dir, ref_dir):
+    """Export CIFAR-10 train split as PNGs for FID (paper uses train-set FID)."""
+    marker = os.path.join(ref_dir, ".done")
+    if os.path.exists(marker):
+        return ref_dir
+    os.makedirs(ref_dir, exist_ok=True)
+    ds = torchvision.datasets.CIFAR10(
+        data_dir, train=True, download=True, transform=TF.ToTensor())
+    for i in tqdm(range(len(ds)), desc="export CIFAR-10 ref for FID"):
+        img, _ = ds[i]
+        save_image(img, os.path.join(ref_dir, f"{i:05d}.png"))
+    with open(marker, "w", encoding="utf-8") as f:
+        f.write("ok\n")
+    print(f"CIFAR-10 ref exported: {ref_dir} ({len(ds)} images)")
+    return ref_dir
+
+
+@torch.no_grad()
+def generate_fid_samples(model, diffusion, device, out_dir, n, batch_size):
+    """Generate n images with the EMA model and save as PNGs in out_dir."""
+    os.makedirs(out_dir, exist_ok=True)
+    for old in os.listdir(out_dir):
+        if old.endswith(".png"):
+            os.remove(os.path.join(out_dir, old))
+    idx = 0
+    pbar = tqdm(total=n, desc="generate FID samples")
+    while idx < n:
+        bs = min(batch_size, n - idx)
+        x, _ = diffusion.p_sample_loop(model, (bs, 3, 32, 32), device)
+        imgs = ((x + 1) / 2).clamp(0, 1)
+        for j in range(bs):
+            save_image(imgs[j], os.path.join(out_dir, f"{idx + j:05d}.png"))
+        idx += bs
+        pbar.update(bs)
+    pbar.close()
+
+
+def compute_fid(fake_dir, ref_dir, device, batch_size=50):
+    from pytorch_fid import fid_score
+    return fid_score.calculate_fid_given_paths(
+        [fake_dir, ref_dir],
+        batch_size=batch_size,
+        device=device,
+        dims=2048,
+        num_workers=0,
+    )
+
+
+def run_fid_eval(model, ema_shadow, diffusion, device, args, step=None, writer=None):
+    """Generate fake samples and compute FID against CIFAR-10 train set."""
+    ref_dir = ensure_cifar10_ref(args.data_dir, os.path.join(args.data_dir, "cifar10_fid_ref"))
+    fake_dir = os.path.join(args.out, "fid", "fake")
+    ema_model = make_ema_model(model, ema_shadow)
+    t0 = time.time()
+    generate_fid_samples(ema_model, diffusion, device, fake_dir, args.n_fid, args.fid_batch)
+    fid = compute_fid(fake_dir, ref_dir, device, batch_size=args.fid_batch)
+    dt = time.time() - t0
+    tag = f"step {step}" if step is not None else "final"
+    print(f"FID ({tag}, n={args.n_fid}): {fid:.2f}  ({dt / 60:.1f} min)")
+    if writer is not None and step is not None:
+        writer.add_scalar("eval/fid", fid, step)
+    return fid
+
 #======= train & sample ====
 
 def train(args):
@@ -256,6 +329,10 @@ def train(args):
         print(f"resumed from checkpoint: step {step}")
 
     loader = get_loader(args.data_dir, args.batch_size)
+    tb_dir = os.path.join(args.out, "tb")
+    writer = SummaryWriter(log_dir=tb_dir)
+    writer.add_text("config", "\n".join(f"{k}: {v}" for k, v in sorted(vars(args).items())), 0)
+    print(f"tensorboard: tensorboard --logdir {tb_dir}")
 
     def save_ckpt():
         torch.save({"model": model.state_dict(), "opt": opt.state_dict(),
@@ -263,12 +340,12 @@ def train(args):
                     "args": vars(args)}, os.path.join(args.out, "ckpt.pt"))
 
     def quick_sample(tag):
-        ema_model = copy.deepcopy(model)
-        ema_model.load_state_dict(ema.shadow)
-        ema_model.eval()
+        ema_model = make_ema_model(model, ema.shadow)
         x, _ = diffusion.p_sample_loop(ema_model, (args.n_samples, 3, 32, 32), device)
-        save_image((x + 1) / 2, os.path.join(args.out, f"samples_{tag}.png"),
+        imgs = ((x + 1) / 2).clamp(0, 1)
+        save_image(imgs, os.path.join(args.out, f"samples_{tag}.png"),
                    nrow=8, value_range=(0, 1))
+        writer.add_images("samples/grid", imgs, global_step=tag)
 
     t0 = time.time()
     while step < args.max_steps:
@@ -288,15 +365,23 @@ def train(args):
                 dt = (time.time() - t0) / args.log_every * 1000
                 t0 = time.time()
                 print(f"step {step:>7d} | loss {loss.item():.4f} | {dt:.0f} ms/step")
+                writer.add_scalar("train/loss", loss.item(), step)
+                writer.add_scalar("train/ms_per_step", dt, step)
 
             if step % args.sample_every == 0:
                 quick_sample(step)
                 print(f"    saved samples_{step}.png")
-            
+
+            if args.fid_every > 0 and step % args.fid_every == 0:
+                run_fid_eval(model, ema.shadow, diffusion, device, args, step=step, writer=writer)
+
             if step % args.ckpt_every == 0:
                 save_ckpt()
-        
+
     save_ckpt()
+    if args.fid_final:
+        run_fid_eval(model, ema.shadow, diffusion, device, args, step=step, writer=writer)
+    writer.close()
     print(f"training done, {step} steps, checkpoint: {os.path.join(args.out, 'ckpt.pt')}")
             
 def sample(args):
@@ -322,6 +407,25 @@ def sample(args):
         save_image(grid.view(-1, 3, 32, 32), out_p, nrow=args.n_samples, value_range=(0, 1))
         print(f"progression: {out_p} (top to bottom: high noise -> low noise)")
 
+
+def eval_fid(args):
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    ckpt = torch.load(args.ckpt, map_location=device, weights_only=False)
+    ca = ckpt["args"]
+
+    model = Unet(dim=ca["dim"], dropout=ca["dropout"]).to(device)
+    model.load_state_dict(ckpt["ema"])
+    diffusion = GaussianDiffusion(T=ca["T"], sigma_type=ca["sigma"]).to(device)
+
+    fid_args = argparse.Namespace(
+        data_dir=args.data_dir,
+        out=ca.get("out", args.out),
+        n_fid=args.n_fid,
+        fid_batch=args.fid_batch,
+    )
+    os.makedirs(fid_args.out, exist_ok=True)
+    run_fid_eval(model, ckpt["ema"], diffusion, device, fid_args)
+
 #======= main ==============
 
 if __name__ == "__main__":
@@ -342,6 +446,16 @@ if __name__ == "__main__":
     p.add_argument("--ckpt", type=str, default=None)
     p.add_argument("--n_samples", type=int, default=64)
     p.add_argument("--progress_every", type=int, default=250)
+    # FID eval (paper: 50k samples vs CIFAR-10 train set)
+    p.add_argument("--eval_fid", action="store_true", help="FID only (requires --ckpt)")
+    p.add_argument("--fid_every", type=int, default=20_000,
+                   help="compute FID every N steps during training (0=disable)")
+    p.add_argument("--fid_final", action="store_true",
+                   help="run FID once after training finishes")
+    p.add_argument("--n_fid", type=int, default=10_000,
+                   help="number of generated images for FID (paper uses 50000)")
+    p.add_argument("--fid_batch", type=int, default=64,
+                   help="batch size for sample generation during FID")
     # misc
     p.add_argument("--data_dir", type=str, default="data")
     p.add_argument("--out", type=str, default="runs/ddpm_cifar")
@@ -352,7 +466,10 @@ if __name__ == "__main__":
     args = p.parse_args()
 
     os.makedirs(args.out, exist_ok=True)
-    if args.sample:
+    if args.eval_fid:
+        assert args.ckpt, "--eval_fid requires --ckpt"
+        eval_fid(args)
+    elif args.sample:
         assert args.ckpt, "--sample requires --ckpt"
         sample(args)
     else:

@@ -1,0 +1,126 @@
+# DDPM from Scratch
+
+[中文文档](README_zh.md)
+
+A minimal, single-file reimplementation of **Denoising Diffusion Probabilistic Models** (Ho et al., NeurIPS 2020) on CIFAR-10. Inspired by the [nanoGPT](https://github.com/karpathy/nanoGPT) style: one script, readable code, easy to learn and extend.
+
+**Paper:** [Denoising Diffusion Probabilistic Models](https://arxiv.org/abs/2006.11239) (arXiv:2006.11239)
+
+## Features
+
+- Forward diffusion, L_simple training, and full 1000-step DDPM sampling
+- U-Net noise predictor with sinusoidal timestep embedding and spatial self-attention
+- EMA weights for sampling
+- TensorBoard logging (loss, speed, sample grids, FID)
+- FID evaluation against the CIFAR-10 **training set** (same protocol as the paper)
+
+## Project Layout
+
+```
+my_DDPM/
+├── train.py              # training, sampling, FID eval (all-in-one)
+├── requirements.txt
+├── docs/
+│   ├── DDPM-note.html    # paper reading notes (Chinese)
+│   └── 2006.11239v2.pdf  # original paper
+├── data/                 # CIFAR-10 (auto-downloaded)
+└── runs/                 # checkpoints, samples, tensorboard logs
+```
+
+## Setup
+
+Requires Python 3.11+, NVIDIA GPU recommended (CUDA 12.0+ driver).
+
+```bash
+pip install -r requirements.txt
+```
+
+## Quick Start
+
+### Train
+
+```bash
+python train.py --out runs/ddpm_cifar
+```
+
+CIFAR-10 is downloaded to `data/` automatically. Checkpoints and sample grids are saved under `runs/ddpm_cifar/`.
+
+### Resume
+
+```bash
+python train.py --out runs/ddpm_cifar --resume runs/ddpm_cifar/ckpt.pt
+```
+
+### Sample
+
+```bash
+python train.py --sample --ckpt runs/ddpm_cifar/ckpt.pt --out runs/ddpm_cifar
+```
+
+Outputs `samples_final.png` and `progression.png` (coarse-to-fine denoising).
+
+### TensorBoard
+
+```bash
+tensorboard --logdir runs/ddpm_cifar/tb
+```
+
+Logs: `train/loss`, `train/ms_per_step`, `samples/grid`, `eval/fid`.
+
+### FID Evaluation
+
+Evaluate an existing checkpoint:
+
+```bash
+python train.py --eval_fid --ckpt runs/ddpm_cifar/ckpt.pt --n_fid 10000
+```
+
+Run FID periodically during training (every 20k steps by default):
+
+```bash
+python train.py --out runs/ddpm_cifar --fid_every 20000
+```
+
+For paper-comparable numbers, use 50k samples (slower):
+
+```bash
+python train.py --eval_fid --ckpt runs/ddpm_cifar/ckpt.pt --n_fid 50000
+```
+
+> FID is expensive: each image requires a full 1000-step sampling chain. Use `--n_fid 5000` for quick checks during development.
+
+## Common Options
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--max_steps` | 200000 | Training steps |
+| `--batch_size` | 128 | Batch size |
+| `--dim` | 64 | U-Net base channels (~3.6M params) |
+| `--T` | 1000 | Diffusion timesteps |
+| `--sample_every` | 5000 | Save sample grid every N steps |
+| `--fid_every` | 20000 | FID every N steps (`0` = disable) |
+| `--n_fid` | 10000 | Images for FID (paper: 50000) |
+
+## vs. Original Paper
+
+This repo implements the core DDPM recipe (ε-prediction + L_simple + EMA) but uses a **smaller U-Net** for faster iteration:
+
+| | This repo | Paper (CIFAR-10) |
+|--|-----------|------------------|
+| Params | ~3.6M (`dim=64`) | ~35.7M (`dim=128`) |
+| ResBlocks / level | 1 | 2 |
+| Training steps | 200k (default) | 800k |
+| Target FID | — | 3.17 |
+
+See `docs/DDPM-note.html` for a detailed paper walkthrough.
+
+## Reference
+
+```bibtex
+@inproceedings{ho2020ddpm,
+  title={Denoising Diffusion Probabilistic Models},
+  author={Ho, Jonathan and Jain, Ajay and Abbeel, Pieter},
+  booktitle={NeurIPS},
+  year={2020}
+}
+```
