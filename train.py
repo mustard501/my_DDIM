@@ -304,10 +304,25 @@ def _frechet_distance(mu1, sigma1, mu2, sigma2, eps=1e-6):
     return float(diff @ diff + np.trace(sigma1) + np.trace(sigma2) - 2 * np.trace(covmean))
 
 
+def _list_images(img_dir):
+    """List image paths; pytorch-fid expects a file list, not a directory string."""
+    files = sorted(
+        os.path.join(img_dir, f) for f in os.listdir(img_dir)
+        if f.lower().endswith((".png", ".jpg", ".jpeg"))
+    )
+    if not files:
+        raise FileNotFoundError(f"no images found in {img_dir}")
+    return files
+
+
 def compute_fid(fake_dir, ref_dir, device, batch_size=50):
     """Extract Inception features with pytorch-fid, Fréchet dist with our helper."""
     from pytorch_fid import fid_score
     from pytorch_fid.inception import InceptionV3
+
+    fake_files = _list_images(fake_dir)
+    ref_files = _list_images(ref_dir)
+    print(f"FID: {len(fake_files)} fake vs {len(ref_files)} ref images")
 
     dims = 2048
     block = max(1, min(batch_size, 256))
@@ -315,9 +330,9 @@ def compute_fid(fake_dir, ref_dir, device, batch_size=50):
     model.eval()
 
     mu_g, sigma_g = fid_score.calculate_activation_statistics(
-        fake_dir, model, block, dims, device, num_workers=0)
+        fake_files, model, block, dims, device, num_workers=0)
     mu_r, sigma_r = fid_score.calculate_activation_statistics(
-        ref_dir, model, block, dims, device, num_workers=0)
+        ref_files, model, block, dims, device, num_workers=0)
     return _frechet_distance(mu_g, sigma_g, mu_r, sigma_r)
 
 
