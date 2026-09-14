@@ -1,14 +1,18 @@
-# DDPM from Scratch
+# DDPM / DDIM from Scratch
 
 [中文文档](README_zh.md)
 
-A minimal, single-file reimplementation of **Denoising Diffusion Probabilistic Models** (Ho et al., NeurIPS 2020) on CIFAR-10. Inspired by the [nanoGPT](https://github.com/karpathy/nanoGPT) style: one script, readable code, easy to learn and extend.
+A minimal, single-file reimplementation of **Denoising Diffusion Probabilistic Models** (Ho et al., NeurIPS 2020) and **Denoising Diffusion Implicit Models** (Song et al., ICLR 2021) on CIFAR-10. Inspired by the [nanoGPT](https://github.com/karpathy/nanoGPT) style: one script, readable code, easy to learn and extend.
 
-**Paper:** [Denoising Diffusion Probabilistic Models](https://arxiv.org/abs/2006.11239) (arXiv:2006.11239)
+**Papers:**
+
+- [Denoising Diffusion Probabilistic Models](https://arxiv.org/abs/2006.11239) (arXiv:2006.11239)
+- [Denoising Diffusion Implicit Models](https://arxiv.org/abs/2010.02502) (arXiv:2010.02502)
 
 ## Features
 
 - Forward diffusion, L_simple training, and full 1000-step DDPM sampling
+- DDIM sampling: 100-step sub-sequence by default, adjustable η (η=0 deterministic, η=1 DDPM-level stochasticity)
 - U-Net noise predictor with sinusoidal timestep embedding and spatial self-attention
 - EMA weights for sampling
 - TensorBoard logging (loss, speed, sample grids, FID)
@@ -17,12 +21,12 @@ A minimal, single-file reimplementation of **Denoising Diffusion Probabilistic M
 ## Project Layout
 
 ```
-my_DDPM/
+my_DDIM/
 ├── train.py              # training, sampling, FID eval (all-in-one)
 ├── requirements.txt
 ├── docs/
 │   ├── DDPM-note.html    # paper reading notes (Chinese)
-│   └── 2006.11239v2.pdf  # original paper
+│   └── 2010.02502v4.pdf  # DDIM paper
 ├── data/                 # CIFAR-10 (auto-downloaded)
 └── runs/                 # checkpoints, samples, tensorboard logs
 ```
@@ -53,11 +57,16 @@ python train.py --out runs/ddpm_cifar --resume runs/ddpm_cifar/ckpt.pt
 
 ### Sample
 
+`--sample` uses DDIM by default (100-step sub-sequence):
+
 ```bash
-python train.py --sample --ckpt runs/ddpm_cifar/ckpt.pt --out runs/ddpm_cifar
+python train.py --sample --ckpt runs/ddpm_cifar/ckpt.pt --out runs/ddpm_cifar   # eta=0, deterministic
+python train.py --sample --ckpt runs/ddpm_cifar/ckpt.pt --eta 1.0               # DDPM-level noise
 ```
 
-Outputs `samples_final.png` and `progression.png` (coarse-to-fine denoising).
+Outputs `samples_final.png` and `progression.png` (coarse-to-fine denoising; add `--progress_every 10` to see intermediate stages). With `--eta 0` and the same seed, repeated runs produce identical images.
+
+> FID evaluation (`--eval_fid`) still uses the full 1000-step DDPM chain, keeping the baseline protocol unchanged.
 
 ### TensorBoard
 
@@ -97,6 +106,7 @@ python train.py --eval_fid --ckpt runs/ddpm_cifar/ckpt.pt --n_fid 50000
 | `--batch_size` | 128 | Batch size |
 | `--dim` | 64 | U-Net base channels (~3.6M params) |
 | `--T` | 1000 | Diffusion timesteps |
+| `--eta` | 0.0 | DDIM noise level: 0 = deterministic, 1 = DDPM variance |
 | `--sample_every` | 5000 | Save sample grid every N steps |
 | `--fid_every` | 20000 | FID every N steps (`0` = disable) |
 | `--n_fid` | 10000 | Images for FID (paper: 50000) |
@@ -122,5 +132,12 @@ See `docs/DDPM-note.html` for a detailed paper walkthrough.
   author={Ho, Jonathan and Jain, Ajay and Abbeel, Pieter},
   booktitle={NeurIPS},
   year={2020}
+}
+
+@inproceedings{song2021ddim,
+  title={Denoising Diffusion Implicit Models},
+  author={Song, Jiaming and Meng, Chenlin and Ermon, Stefano},
+  booktitle={ICLR},
+  year={2021}
 }
 ```

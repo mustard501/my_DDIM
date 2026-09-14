@@ -35,6 +35,8 @@ class GaussianDiffusion:
         posterior_var = betas * (1.0 - acp_prev) / (1.0 - acp)
         self.posterior_std = posterior_var.sqrt()   
 
+        # DDIM addition: raw alpha-bar needed for arbitrary sub-sequences
+        self.acp = acp
 
     def to(self, device):
         for k, v in vars(self).items():
@@ -85,6 +87,65 @@ class GaussianDiffusion:
                 snaps.append(self.predict_x0(model, x, t))
         return x, snaps
         
+    # DDIM sample (loop)
+    @torch.no_grad()
+    def ddim_p_sample(self, model, x, t, s, eta=0.0):
+        """One DDIM step x_t -> x_s (s < t, arbitrary skip).
+
+        x_s = sqrt(ab_s)*x0_hat + sqrt(1 - ab_s - sigma^2)*eps + sigma*z
+        sigma^2 = eta^2 * (1-ab_s)/(1-ab_t) * (1 - ab_t/ab_s)
+        
+        eta=0: deterministic DDIM; eta=1: matches DDPM variance.
+        """
+        tv = torch.full((x.shape[0],), t, device=x.device, dtype=torch.long)
+        sv = torch.full((x.shape[0],), s, device=x.device, dtype=torch.long)
+        x0_pred = self.predict_x0(model, x, t)        # one forward pass only
+        eps = (x - extract(self.sqrt_acp, tv, x.shape) * x0_pred) \
+            / extract(self.sqrt_1m_acp, tv, x.shape)  # recover eps from x0_hat
+        acp_t, acp_s = extract(self.acp, tv, x.shape), extract(self.acp, sv, x.shape)
+        sigma_var = (eta ** 2) * (1.0 - acp_s) * (1.0 - acp_t / acp_s) / (1.0 - acp_t)
+        sigma_var = sigma_var.clamp(min=0.0)
+        dir_term = (1.0 - acp_s - sigma_var).sqrt() * eps
+        x_s = acp_s.sqrt() * x0_pred + dir_term
+        if eta > 0 and s > 0:
+            x_s = x_s + sigma_var.sqrt() * torch.randn_like(x)
+        return x_s
+
+    def make_ddim_timesteps(self, num_steps, spacing="uniform"):
+        """Build the descending DDIM sub-sequence tau_1 > ... > tau_S = 0.
+
+        Original timestep indices (NOT renumbered): the model was trained on
+        0..T-1, so its time conditioning must see the raw indices.
+
+        spacing="uniform": t_i evenly spaced in [0, T-1] (paper's default).
+        spacing="quad":    t_i = (i/(S-1))^2 * (T-1), denser near t=0 where
+                           fine details are resolved (used in the DDIM paper).
+        Duplicate timesteps are dropped, so the actual length can be < num_steps.
+        """
+        if num_steps <= 1:
+            return [self.T - 1, 0]
+        if num_steps >= self.T:
+            return list(range(self.T - 1, -1, -1))
+        if spacing == "uniform":
+            fracs = [i / (num_steps - 1) for i in range(num_steps)]
+        elif spacing == "quad":
+            fracs = [(i / (num_steps - 1)) ** 2 for i in range(num_steps)]
+        else:
+            raise ValueError(f"unknown spacing: {spacing!r}")
+        return sorted({int(round(f * (self.T - 1))) for f in fracs}, reverse=True)
+
+    @torch.no_grad()
+    def ddim_p_sample_loop(self, model, shape, device, num_steps=100, spacing="uniform",
+                           eta=0.0, progress_every=None):
+        taus = self.make_ddim_timesteps(num_steps, spacing)   # e.g. 999 > 989 > ... > 0
+        x = torch.randn(shape, device=device)
+        snaps = []
+        for i in range(len(taus) - 1):
+            t, s = taus[i], taus[i + 1]                        # original indices
+            x = self.ddim_p_sample(model, x, t, s, eta=eta)
+            if progress_every and (i % progress_every == 0 or i == len(taus) - 2):
+                snaps.append(self.predict_x0(model, x, s))
+        return x, snaps
 
 
 
@@ -440,8 +501,12 @@ def sample(args):
 
     diffusion = GaussianDiffusion(T=ckpt["args"]["T"],
                                   sigma_type=ckpt["args"]["sigma"]).to(device)
-    x, snaps = diffusion.p_sample_loop(model, (args.n_samples, 3, 32, 32), device,
-                                       progress_every=args.progress_every)
+    # === DDPM ===
+    # x, snaps = diffusion.p_sample_loop(model, (args.n_samples, 3, 32, 32), device,
+    #                                    progress_every=args.progress_every)
+    # === DDIM ===
+    x, snaps = diffusion.ddim_p_sample_loop(model, (args.n_samples, 3, 32, 32), device,
+                                       progress_every=args.progress_every, eta=args.eta)
     out = os.path.join(args.out, "samples_final.png")
     save_image((x + 1) / 2, out, nrow=8, value_range=(0, 1))
     print(f"samples: {out}")
@@ -487,6 +552,7 @@ if __name__ == "__main__":
     p.add_argument("--T", type=int, default=1000)
     p.add_argument("--dropout", type=float, default=0.1)
     p.add_argument("--sigma", type=str, default="beta", choices=["beta", "beta_tilde"])
+    p.add_argument("--eta", type=float, default=0.0, help="sigma's coef in DDIM-skip-sample")
     # sampling
     p.add_argument("--sample", action="store_true", help="sample only (requires --ckpt)")
     p.add_argument("--ckpt", type=str, default=None)
