@@ -1,4 +1,4 @@
-# DDPM / DDIM 复现
+# DDIM 复现
 
 [English](README.md)
 
