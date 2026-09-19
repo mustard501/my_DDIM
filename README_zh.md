@@ -68,7 +68,7 @@ python train.py --sample --ckpt runs/ddpm_cifar/ckpt.pt --eta 1.0               
 
 生成 `samples_final.png` 和 `progression.png`（由粗到细的渐进去噪过程，配 `--progress_every 10` 可查看中间去噪阶段）。η=0 时同 seed 重复采样结果逐像素一致。
 
-> FID 评测（`--eval_fid`）仍使用完整 1000 步 DDPM 采样链，保持基准口径不变。
+> FID 默认走 DDIM（`--fid_sampler ddim`，100 步，η=0）。加 `--fid_sampler ddpm` 可改回完整 1000 步 DDPM。
 
 ### TensorBoard 监控
 
@@ -80,25 +80,27 @@ tensorboard --logdir runs/ddpm_cifar/tb
 
 ### FID 评测
 
-对已有 checkpoint 评测：
+对已有 checkpoint 评测（默认 DDIM）：
 
 ```bash
 python train.py --eval_fid --ckpt runs/ddpm_cifar/ckpt.pt --n_fid 10000
+python train.py --eval_fid --ckpt runs/ddpm_cifar/ckpt.pt --fid_sampler ddpm
 ```
 
 训练期间定期评测（默认每 2 万步）：
 
 ```bash
 python train.py --out runs/ddpm_cifar --fid_every 20000
+python train.py --out runs/ddpm_cifar --fid_every 20000 --fid_sampler ddpm
 ```
 
 对标论文时使用 5 万张图（更慢、更准确）：
 
 ```bash
-python train.py --eval_fid --ckpt runs/ddpm_cifar/ckpt.pt --n_fid 50000
+python train.py --eval_fid --ckpt runs/ddpm_cifar/ckpt.pt --n_fid 50000 --fid_sampler ddpm
 ```
 
-> FID 评测较慢：每张图需完整 1000 步采样。开发阶段可用 `--n_fid 5000` 快速看趋势。
+> 默认 DDIM FID 走 100 步链。`--fid_sampler ddpm` 是论文口径，但更慢（每张图 1000 步）。开发阶段可用 `--n_fid 5000` 快速看趋势。
 
 ## 常用参数
 
@@ -110,6 +112,7 @@ python train.py --eval_fid --ckpt runs/ddpm_cifar/ckpt.pt --n_fid 50000
 | `--T` | 1000 | 扩散步数 |
 | `--eta` | 0.0 | DDIM 噪声系数：0 = 确定性，1 = DDPM 方差 |
 | `--sample_every` | 5000 | 每 N 步保存采样图 |
+| `--fid_sampler` | `ddim` | FID 采样器：`ddim`（100 步）或 `ddpm`（1000 步） |
 | `--fid_every` | 20000 | 每 N 步评 FID（`0` 关闭） |
 | `--n_fid` | 10000 | FID 生成样本数（论文 50000） |
 

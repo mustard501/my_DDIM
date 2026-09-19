@@ -66,7 +66,7 @@ python train.py --sample --ckpt runs/ddpm_cifar/ckpt.pt --eta 1.0               
 
 Outputs `samples_final.png` and `progression.png` (coarse-to-fine denoising; add `--progress_every 10` to see intermediate stages). With `--eta 0` and the same seed, repeated runs produce identical images.
 
-> FID evaluation (`--eval_fid`) still uses the full 1000-step DDPM chain, keeping the baseline protocol unchanged.
+> FID defaults to DDIM (`--fid_sampler ddim`, 100-step, η=0). Use `--fid_sampler ddpm` for the full 1000-step DDPM chain.
 
 ### TensorBoard
 
@@ -78,25 +78,27 @@ Logs: `train/loss`, `train/ms_per_step`, `samples/grid`, `eval/fid`.
 
 ### FID Evaluation
 
-Evaluate an existing checkpoint:
+Evaluate an existing checkpoint (DDIM by default):
 
 ```bash
 python train.py --eval_fid --ckpt runs/ddpm_cifar/ckpt.pt --n_fid 10000
+python train.py --eval_fid --ckpt runs/ddpm_cifar/ckpt.pt --fid_sampler ddpm
 ```
 
 Run FID periodically during training (every 20k steps by default):
 
 ```bash
 python train.py --out runs/ddpm_cifar --fid_every 20000
+python train.py --out runs/ddpm_cifar --fid_every 20000 --fid_sampler ddpm
 ```
 
 For paper-comparable numbers, use 50k samples (slower):
 
 ```bash
-python train.py --eval_fid --ckpt runs/ddpm_cifar/ckpt.pt --n_fid 50000
+python train.py --eval_fid --ckpt runs/ddpm_cifar/ckpt.pt --n_fid 50000 --fid_sampler ddpm
 ```
 
-> FID is expensive: each image requires a full 1000-step sampling chain. Use `--n_fid 5000` for quick checks during development.
+> Default DDIM FID uses a 100-step chain. `--fid_sampler ddpm` is the paper protocol but expensive (1000 steps per image). Use `--n_fid 5000` for quick checks during development.
 
 ## Common Options
 
@@ -108,6 +110,7 @@ python train.py --eval_fid --ckpt runs/ddpm_cifar/ckpt.pt --n_fid 50000
 | `--T` | 1000 | Diffusion timesteps |
 | `--eta` | 0.0 | DDIM noise level: 0 = deterministic, 1 = DDPM variance |
 | `--sample_every` | 5000 | Save sample grid every N steps |
+| `--fid_sampler` | `ddim` | FID sampler: `ddim` (100-step) or `ddpm` (1000-step) |
 | `--fid_every` | 20000 | FID every N steps (`0` = disable) |
 | `--n_fid` | 10000 | Images for FID (paper: 50000) |
 

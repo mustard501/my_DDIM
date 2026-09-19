@@ -321,17 +321,23 @@ def ensure_cifar10_ref(data_dir, ref_dir):
 
 
 @torch.no_grad()
-def generate_fid_samples(model, diffusion, device, out_dir, n, batch_size):
+def generate_fid_samples(model, diffusion, device, out_dir, n, batch_size, sampler="ddim"):
     """Generate n images with the EMA model and save as PNGs in out_dir."""
     os.makedirs(out_dir, exist_ok=True)
     for old in os.listdir(out_dir):
         if old.endswith(".png"):
             os.remove(os.path.join(out_dir, old))
     idx = 0
-    pbar = tqdm(total=n, desc="generate FID samples")
+    pbar = tqdm(total=n, desc=f"generate FID samples ({sampler})")
     while idx < n:
         bs = min(batch_size, n - idx)
-        x, _ = diffusion.p_sample_loop(model, (bs, 3, 32, 32), device)
+        shape = (bs, 3, 32, 32)
+        if sampler == "ddim":
+            x, _ = diffusion.ddim_p_sample_loop(model, shape, device)
+        elif sampler == "ddpm":
+            x, _ = diffusion.p_sample_loop(model, shape, device)
+        else:
+            raise ValueError(f"unknown FID sampler: {sampler!r}")
         imgs = ((x + 1) / 2).clamp(0, 1)
         for j in range(bs):
             save_image(imgs[j], os.path.join(out_dir, f"{idx + j:05d}.png"))
@@ -403,11 +409,13 @@ def run_fid_eval(model, ema_shadow, diffusion, device, args, step=None, writer=N
     fake_dir = os.path.join(args.out, "fid", "fake")
     ema_model = make_ema_model(model, ema_shadow)
     t0 = time.time()
-    generate_fid_samples(ema_model, diffusion, device, fake_dir, args.n_fid, args.fid_batch)
+    generate_fid_samples(
+        ema_model, diffusion, device, fake_dir, args.n_fid, args.fid_batch,
+        sampler=args.fid_sampler)
     fid = compute_fid(fake_dir, ref_dir, device, batch_size=args.fid_batch)
     dt = time.time() - t0
     tag = f"step {step}" if step is not None else "final"
-    print(f"FID ({tag}, n={args.n_fid}): {fid:.2f}  ({dt / 60:.1f} min)")
+    print(f"FID ({tag}, n={args.n_fid}, {args.fid_sampler}): {fid:.2f}  ({dt / 60:.1f} min)")
     if writer is not None and step is not None:
         writer.add_scalar("eval/fid", fid, step)
     return fid
@@ -533,6 +541,7 @@ def eval_fid(args):
         out=ca.get("out", args.out),
         n_fid=args.n_fid,
         fid_batch=args.fid_batch,
+        fid_sampler=args.fid_sampler,
     )
     os.makedirs(fid_args.out, exist_ok=True)
     run_fid_eval(model, ckpt["ema"], diffusion, device, fid_args)
@@ -560,6 +569,8 @@ if __name__ == "__main__":
     p.add_argument("--progress_every", type=int, default=250)
     # FID eval (paper: 50k samples vs CIFAR-10 train set)
     p.add_argument("--eval_fid", action="store_true", help="FID only (requires --ckpt)")
+    p.add_argument("--fid_sampler", type=str, default="ddim", choices=["ddpm", "ddim"],
+                   help="FID sampler: ddim = 100-step default; ddpm = full T-step chain")
     p.add_argument("--fid_every", type=int, default=20_000,
                    help="compute FID every N steps during training (0=disable)")
     p.add_argument("--fid_final", action="store_true",
